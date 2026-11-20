@@ -35,17 +35,20 @@ type StdioClient struct {
 	pending map[string]chan *Response
 	closed  bool
 
-	callTimeout time.Duration
+	callTimeout  time.Duration
+	probeTimeout time.Duration // resources/prompts 等协议探测调用的短超时
+	caps         ServerCaps    // 握手时 server 声明的能力
 }
 
 // NewStdioClient 构造（不启动进程，Initialize 时才启动）。
 func NewStdioClient(name, command string, args []string, env map[string]string) *StdioClient {
 	c := &StdioClient{
-		name:        name,
-		command:     command,
-		args:        args,
-		pending:     map[string]chan *Response{},
-		callTimeout: 300 * time.Second, // 工具级上限；npx 首次拉包可能较慢
+		name:         name,
+		command:      command,
+		args:         args,
+		pending:      map[string]chan *Response{},
+		callTimeout:  300 * time.Second, // 工具级上限；npx 首次拉包可能较慢
+		probeTimeout: 10 * time.Second,  // resources/prompts 探测：不响应的 server 不能拖死注册流程
 	}
 	for k, v := range env {
 		c.env = append(c.env, k+"="+v)
@@ -97,6 +100,7 @@ func (c *StdioClient) Initialize() error {
 		c.Close()
 		return fmt.Errorf("%s: protocol %q != %q", c.name, result.ProtocolVersion, ProtocolVersion)
 	}
+	c.caps = result.Capabilities // 记录 server 声明的能力，后续探测据此决定是否发请求
 	// 通知服务端握手完成（协议要求）
 	if err := c.notify(MethodInitialized, nil); err != nil {
 		c.Close()
@@ -121,6 +125,72 @@ func (c *StdioClient) CallTool(name string, args map[string]any) (*CallToolResul
 	var result CallToolResult
 	if err := c.call(MethodToolsCall, params, &result); err != nil {
 		return nil, fmt.Errorf("%s.%s: %w", c.name, name, err)
+	}
+	return &result, nil
+}
+
+// ListResources 拉取资源清单。仅当握手时 server 声明了 resources 能力才发请求。
+func (c *StdioClient) ListResources() ([]Resource, error) {
+	if c.caps.Resources == nil {
+		return nil, nil
+	}
+	var result ListResourcesResult
+	if err := c.callIn(MethodResourcesList, map[string]any{}, &result, c.probeTimeout); err != nil {
+		return nil, fmt.Errorf("%s resources/list: %w", c.name, err)
+	}
+	return result.Resources, nil
+}
+
+// ReadResource 读取单个资源内容。
+func (c *StdioClient) ReadResource(uri string) (*ResourceContents, error) {
+	if c.caps.Resources == nil {
+		return nil, fmt.Errorf("%s 未声明 resources 能力", c.name)
+	}
+	var result ReadResourceResult
+	if err := c.callIn(MethodResourcesRead, ReadResourceParams{URI: uri}, &result, c.probeTimeout); err != nil {
+		return nil, fmt.Errorf("%s resources/read: %w", c.name, err)
+	}
+	if len(result.Contents) == 0 {
+		return nil, fmt.Errorf("%s resources/read: empty contents", c.name)
+	}
+	return &result.Contents[0], nil
+}
+
+// ListResourceTemplates 拉取资源模板清单。
+func (c *StdioClient) ListResourceTemplates() ([]ResourceTemplate, error) {
+	if c.caps.Resources == nil {
+		return nil, nil
+	}
+	var result ListResourceTemplatesResult
+	if err := c.callIn(MethodResourcesTemplatesList, map[string]any{}, &result, c.probeTimeout); err != nil {
+		return nil, fmt.Errorf("%s resources/templates/list: %w", c.name, err)
+	}
+	return result.ResourceTemplates, nil
+}
+
+// ListPrompts 拉取提示词清单。仅当握手时 server 声明了 prompts 能力才发请求。
+func (c *StdioClient) ListPrompts() ([]Prompt, error) {
+	if c.caps.Prompts == nil {
+		return nil, nil
+	}
+	var result ListPromptsResult
+	if err := c.callIn(MethodPromptsList, map[string]any{}, &result, c.probeTimeout); err != nil {
+		return nil, fmt.Errorf("%s prompts/list: %w", c.name, err)
+	}
+	return result.Prompts, nil
+}
+
+// GetPrompt 获取指定提示词。
+func (c *StdioClient) GetPrompt(name string, args map[string]any) (*GetPromptResult, error) {
+	if c.caps.Prompts == nil {
+		return nil, fmt.Errorf("%s 未声明 prompts 能力", c.name)
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	var result GetPromptResult
+	if err := c.callIn(MethodPromptsGet, GetPromptParams{Name: name, Arguments: args}, &result, c.probeTimeout); err != nil {
+		return nil, fmt.Errorf("%s prompts/get: %w", c.name, err)
 	}
 	return &result, nil
 }
@@ -152,6 +222,12 @@ func (c *StdioClient) Close() error {
 // ---------- 内部 ----------
 
 func (c *StdioClient) call(method string, params any, result any) error {
+	return c.callIn(method, params, result, c.callTimeout)
+}
+
+// callIn 与 call 相同，但允许指定超时——协议探测类调用用短超时，
+// 避免不响应的 server 拖死调用方。
+func (c *StdioClient) callIn(method string, params any, result any, timeout time.Duration) error {
 	raw, _ := json.Marshal(params)
 	id := c.nextID.Add(1)
 	req := Request{
@@ -196,9 +272,9 @@ func (c *StdioClient) call(method string, params any, result any) error {
 			}
 		}
 		return nil
-	case <-time.After(c.callTimeout):
+	case <-time.After(timeout):
 		c.fail(key)
-		return fmt.Errorf("%s: %s 超时（%s）", c.name, method, c.callTimeout)
+		return fmt.Errorf("%s: %s 超时（%s）", c.name, method, timeout)
 	}
 }
 

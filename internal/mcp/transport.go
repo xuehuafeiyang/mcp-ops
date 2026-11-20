@@ -13,3 +13,13 @@ type ToolServer interface {
 	CallTool(name string, args map[string]any) (*CallToolResult, error)
 	Close() error
 }
+
+// CapabilityServer 是扩展能力接口：支持 Resources / Prompts 的
+// 工具来源（HTTP client、stdio client）额外实现，host 可用类型断言启用。
+type CapabilityServer interface {
+	ListResources() ([]Resource, error)
+	ReadResource(uri string) (*ResourceContents, error)
+	ListResourceTemplates() ([]ResourceTemplate, error)
+	ListPrompts() ([]Prompt, error)
+	GetPrompt(name string, args map[string]any) (*GetPromptResult, error)
+}

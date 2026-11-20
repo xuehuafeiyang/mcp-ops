@@ -32,6 +32,11 @@ type Agent struct {
 	routes    map[string]string // 工具名 → server 名（冲突时自动加 server 前缀）
 	origNames map[string]string // 最终工具名 → server 端原始工具名（改名后调用要用原名）
 	tools     []mcp.Tool
+
+	// 扩展能力：资源与提示词（server 名 → 资源/提示词）
+	caps     map[string]mcp.CapabilityServer
+	resources map[string][]mcp.Resource
+	prompts   map[string][]mcp.Prompt
 }
 
 // NewAgent 构造并从各 MCP Server 拉取工具清单
@@ -40,6 +45,9 @@ func NewAgent(provider llm.Provider, system func() string, maxTurns func() int) 
 		provider: provider, system: system, maxTurns: maxTurns,
 		clients: map[string]mcp.ToolServer{}, routes: map[string]string{},
 		origNames: map[string]string{},
+		caps:     map[string]mcp.CapabilityServer{},
+		resources: map[string][]mcp.Resource{},
+		prompts:   map[string][]mcp.Prompt{},
 	}
 }
 
@@ -70,6 +78,17 @@ func (a *Agent) RegisterServer(ts mcp.ToolServer) error {
 		nt.Name = finalName
 		a.tools = append(a.tools, nt)
 	}
+
+	// 扩展能力：资源与提示词（失败不阻断，仅记录）
+	if caps, ok := ts.(mcp.CapabilityServer); ok {
+		a.caps[name] = caps
+		if rs, err := caps.ListResources(); err == nil {
+			a.resources[name] = rs
+		}
+		if ps, err := caps.ListPrompts(); err == nil {
+			a.prompts[name] = ps
+		}
+	}
 	return nil
 }
 
@@ -89,6 +108,9 @@ func (a *Agent) Close() {
 	a.routes = map[string]string{}
 	a.origNames = map[string]string{}
 	a.tools = nil
+	a.caps = map[string]mcp.CapabilityServer{}
+	a.resources = map[string][]mcp.Resource{}
+	a.prompts = map[string][]mcp.Prompt{}
 	a.mu.Unlock()
 
 	for _, c := range clients {
@@ -101,6 +123,50 @@ func (a *Agent) Tools() []mcp.Tool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return append([]mcp.Tool{}, a.tools...)
+}
+
+// Resources 返回所有 server 聚合后的资源清单（含 server 名前缀标注）。
+func (a *Agent) Resources() map[string][]mcp.Resource {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make(map[string][]mcp.Resource, len(a.resources))
+	for k, v := range a.resources {
+		out[k] = append([]mcp.Resource{}, v...)
+	}
+	return out
+}
+
+// Prompts 返回所有 server 聚合后的提示词清单。
+func (a *Agent) Prompts() map[string][]mcp.Prompt {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make(map[string][]mcp.Prompt, len(a.prompts))
+	for k, v := range a.prompts {
+		out[k] = append([]mcp.Prompt{}, v...)
+	}
+	return out
+}
+
+// ReadResource 从指定 server 读取资源。
+func (a *Agent) ReadResource(server, uri string) (*mcp.ResourceContents, error) {
+	a.mu.RLock()
+	caps := a.caps[server]
+	a.mu.RUnlock()
+	if caps == nil {
+		return nil, fmt.Errorf("server %q 不支持资源", server)
+	}
+	return caps.ReadResource(uri)
+}
+
+// GetPrompt 从指定 server 获取提示词。
+func (a *Agent) GetPrompt(server, name string, args map[string]any) (*mcp.GetPromptResult, error) {
+	a.mu.RLock()
+	caps := a.caps[server]
+	a.mu.RUnlock()
+	if caps == nil {
+		return nil, fmt.Errorf("server %q 不支持提示词", server)
+	}
+	return caps.GetPrompt(name, args)
 }
 
 // Session 一次 REPL 会话（含消息历史）

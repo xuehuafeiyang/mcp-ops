@@ -8,7 +8,7 @@
 # 产物：dist/mcp-ops_<version>_<os>_<arch>.tar.gz|.zip + dist/SHA256SUMS
 set -euo pipefail
 
-VERSION="${1:-0.5.1}"
+VERSION="${1:-0.6.0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
 PKG="mcp-ops"

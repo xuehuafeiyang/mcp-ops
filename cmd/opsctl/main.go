@@ -24,7 +24,7 @@ import (
 )
 
 // version 由构建时通过 -ldflags "-X main.version=..." 注入（见 scripts/release.sh）
-var version = "0.1.0-dev"
+var version = "0.6.0"
 
 func main() {
 	cfgPath := "config.yaml"

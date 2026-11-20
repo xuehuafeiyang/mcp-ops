@@ -96,7 +96,7 @@ func TestPMAssertionsPass(t *testing.T) {
 		Headers:      map[string]string{"Content-Type": "application/json"},
 		Body:         []byte(`{"id":1,"name":"test"}`),
 	}
-	pm := newPMRuntime(NewVarStore(nil, nil), resp)
+	pm := newPMRuntime(NewVarStore(nil, nil), resp, nil)
 	results := pm.RunScript([]string{
 		`pm.test("status", function(){ pm.response.to.have.status(200); });`,
 		`pm.test("json id", function(){ pm.expect(pm.response.json().id).to.equal(1); });`,
@@ -117,7 +117,7 @@ func TestPMAssertionsPass(t *testing.T) {
 
 func TestPMAssertionFail(t *testing.T) {
 	resp := &Response{Status: 404, Body: []byte("not found")}
-	pm := newPMRuntime(NewVarStore(nil, nil), resp)
+	pm := newPMRuntime(NewVarStore(nil, nil), resp, nil)
 	results := pm.RunScript([]string{
 		`pm.test("should fail", function(){ pm.expect(1).to.equal(2); });`,
 		`pm.test("should pass", function(){ pm.expect(1).to.equal(1); });`,
@@ -133,6 +133,103 @@ func TestPMAssertionFail(t *testing.T) {
 	}
 	if !results[1].Passed {
 		t.Error("第二个断言应通过")
+	}
+}
+
+func TestPMHeaderAssertion(t *testing.T) {
+	resp := &Response{
+		Status:     200,
+		StatusText: "200 OK",
+		Headers:    map[string]string{"Content-Type": "application/json", "X-Rate-Limit": "100"},
+		Body:       []byte(`{}`),
+	}
+	pm := newPMRuntime(NewVarStore(nil, nil), resp, nil)
+	results := pm.RunScript([]string{
+		`pm.test("header 存在(大小写不敏感)", function(){ pm.response.to.have.header("content-type"); });`,
+		`pm.test("header 值匹配", function(){ pm.response.to.have.header("X-Rate-Limit", "100"); });`,
+	})
+	if len(results) != 2 {
+		t.Fatalf("期望 2 个断言，得到 %d", len(results))
+	}
+	for _, r := range results {
+		if !r.Passed {
+			t.Errorf("断言 %q 失败: %s", r.Name, r.Error)
+		}
+	}
+
+	// header 值不匹配应失败
+	pm2 := newPMRuntime(NewVarStore(nil, nil), resp, nil)
+	results2 := pm2.RunScript([]string{
+		`pm.test("header 值错误", function(){ pm.response.to.have.header("X-Rate-Limit", "999"); });`,
+	})
+	if len(results2) != 1 || results2[0].Passed {
+		t.Errorf("值不匹配的 header 断言应失败，得到 passed=%v", results2[0].Passed)
+	}
+}
+
+func TestPMSendRequest(t *testing.T) {
+	do := func(method, url string, headers map[string]string, body []byte) (*Response, error) {
+		return &Response{
+			Status:     200,
+			StatusText: "200 OK",
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       []byte(`{"method":"` + method + `","url":"` + url + `"}`),
+		}, nil
+	}
+	pm := newPMRuntime(NewVarStore(nil, nil), nil, do)
+	results := pm.RunScript([]string{
+		`pm.test("sendRequest 对象形式", function(){
+			var r = pm.sendRequest({url:"http://x/api", method:"POST"});
+			pm.expect(r.code).to.equal(200);
+			pm.expect(r.json().method).to.equal("POST");
+			pm.expect(r.json().url).to.include("api");
+		});`,
+		`pm.test("sendRequest 字符串形式", function(){
+			var r = pm.sendRequest("http://y/health");
+			pm.expect(r.json().url).to.include("health");
+		});`,
+	})
+	if len(results) != 2 {
+		t.Fatalf("期望 2 个断言，得到 %d", len(results))
+	}
+	for _, r := range results {
+		if !r.Passed {
+			t.Errorf("断言 %q 失败: %s", r.Name, r.Error)
+		}
+	}
+}
+
+func TestPreRequestScript(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"path":"` + r.URL.Path + `"}`))
+	}))
+	defer srv.Close()
+
+	// 请求 URL 用 {{base}}，pre-request 脚本把 base 设置成 srv.URL
+	ev := Event{Listen: "prerequest"}
+	ev.Script.Exec = []string{`pm.variables.set("base", "` + srv.URL + `");`}
+
+	item := Item{
+		Name:    "prereq",
+		Request: &Request{Method: "GET", URL: &URL{Raw: "{{base}}/ping"}},
+		Event:   []Event{ev},
+	}
+	eng := NewEngine(&config.PostmanConfig{})
+	vars := NewVarStore(nil, nil)
+	res := eng.RunItem(context.Background(), namedItem{Name: "prereq", Item: item}, vars)
+
+	if res.Error != "" {
+		t.Fatalf("运行失败: %s", res.Error)
+	}
+	if res.Status != 200 {
+		t.Errorf("status = %d", res.Status)
+	}
+	if !strings.Contains(res.URL, "/ping") {
+		t.Errorf("URL 应为 .../ping，得到 %q", res.URL)
+	}
+	if !strings.Contains(res.BodyPreview, "/ping") {
+		t.Errorf("响应应含 /ping，得到 %q", res.BodyPreview)
 	}
 }
 

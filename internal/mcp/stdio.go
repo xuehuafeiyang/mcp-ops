@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,6 +32,24 @@ func (s *Server) ServeStdio() error {
 		_ = out.Flush()
 	}
 
+	// progress 通知：工具执行中调用 ctx.Progress 时，把 notification 写到 stdout。
+	s.SetNotifier(func(method string, params any) {
+		p, err := json.Marshal(params)
+		if err != nil {
+			return
+		}
+		n := Notification{JSONRPC: JSONRPCVersion, Method: method, Params: p}
+		data, err := json.Marshal(n)
+		if err != nil {
+			return
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, _ = out.Write(data)
+		_ = out.WriteByte('\n')
+		_ = out.Flush()
+	})
+
 	var wg sync.WaitGroup
 	for in.Scan() {
 		line := bytes.TrimSpace(in.Bytes())
@@ -46,7 +65,7 @@ func (s *Server) ServeStdio() error {
 		wg.Add(1)
 		go func(r Request) {
 			defer wg.Done()
-			resp, _ := s.dispatch(r)
+			resp, _ := s.dispatch(context.Background(), r)
 			if resp != nil {
 				writeResp(resp)
 			}

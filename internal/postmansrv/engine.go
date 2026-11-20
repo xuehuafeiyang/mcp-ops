@@ -140,12 +140,28 @@ func (e *Engine) doRequest(ctx context.Context, spec *RequestSpec) (*Response, e
 	}, nil
 }
 
-// RunItem 运行单个请求并执行 test script，返回结果。
+// RunItem 运行单个请求并执行 pre-request / test script，返回结果。
 func (e *Engine) RunItem(ctx context.Context, ni namedItem, vars *VarStore) RequestResult {
 	res := RequestResult{
 		Name:   ni.Name,
 		Method: strings.ToUpper(ni.Item.Request.Method),
 	}
+
+	// pm.sendRequest 执行器：复用引擎 HTTP 客户端。
+	do := func(method, url string, headers map[string]string, body []byte) (*Response, error) {
+		spec := &RequestSpec{Method: method, URL: url, Headers: headers, Body: body}
+		return e.doRequest(ctx, spec)
+	}
+
+	// 1) pre-request script：在发请求前执行，可设置变量（pm.variables.set 等）
+	for _, ev := range ni.Item.Event {
+		if ev.Listen == "prerequest" {
+			pm := newPMRuntime(vars, nil, do)
+			pm.RunScript(ev.Script.Exec)
+		}
+	}
+
+	// 2) 构建请求（此时变量已可能被 pre-request script 修改）
 	spec, err := buildSpec(ni.Item, vars)
 	if err != nil {
 		res.Error = err.Error()
@@ -154,6 +170,7 @@ func (e *Engine) RunItem(ctx context.Context, ni namedItem, vars *VarStore) Requ
 	res.Method = spec.Method
 	res.URL = spec.URL
 
+	// 3) 发送请求
 	resp, err := e.doRequest(ctx, spec)
 	if err != nil {
 		res.Error = err.Error()
@@ -168,8 +185,8 @@ func (e *Engine) RunItem(ctx context.Context, ni namedItem, vars *VarStore) Requ
 		res.BodyPreview = string(resp.Body)
 	}
 
-	// 执行 test script
-	pm := newPMRuntime(vars, resp)
+	// 4) 执行 test script
+	pm := newPMRuntime(vars, resp, do)
 	for _, ev := range ni.Item.Event {
 		if ev.Listen == "test" {
 			res.Tests = pm.RunScript(ev.Script.Exec)

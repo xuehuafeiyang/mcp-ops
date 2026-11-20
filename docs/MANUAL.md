@@ -1,6 +1,6 @@
 # mcp-ops 使用手册
 
-**版本** v0.5.1 · **适用平台** Linux / macOS / Windows · **交付形态** 单二进制多子命令
+**版本** v0.6.0 · **适用平台** Linux / macOS / Windows · **交付形态** 单二进制多子命令
 
 mcp-ops 是一个用 Go 编写的运维型 MCP 工具集：它把「在多台服务器上执行 SSH 命令」「在多个关系型/非关系型数据库上查询与写入」「抓取网页正文」封装成标准的 MCP 工具，既能被 Kiro、Claude Desktop、Cursor 这类智能体直接调用，也自带一个用自然语言驱动的交互式客户端。
 
@@ -63,17 +63,17 @@ mcp-ops 是一个用 Go 编写的运维型 MCP 工具集：它把「在多台服
 
 | 文件 | 适用 |
 |---|---|
-| `mcp-ops_0.5.1_linux_amd64.tar.gz` | x86_64 Linux 服务器、WSL2 |
-| `mcp-ops_0.5.1_linux_arm64.tar.gz` | ARM64 Linux（鲲鹏、树莓派、AWS Graviton） |
-| `mcp-ops_0.5.1_darwin_amd64.tar.gz` | Intel Mac |
-| `mcp-ops_0.5.1_darwin_arm64.tar.gz` | Apple Silicon Mac（M1/M2/M3/M4） |
-| `mcp-ops_0.5.1_windows_amd64.zip` | 64 位 Windows |
+| `mcp-ops_0.6.0_linux_amd64.tar.gz` | x86_64 Linux 服务器、WSL2 |
+| `mcp-ops_0.6.0_linux_arm64.tar.gz` | ARM64 Linux（鲲鹏、树莓派、AWS Graviton） |
+| `mcp-ops_0.6.0_darwin_amd64.tar.gz` | Intel Mac |
+| `mcp-ops_0.6.0_darwin_arm64.tar.gz` | Apple Silicon Mac（M1/M2/M3/M4） |
+| `mcp-ops_0.6.0_windows_amd64.zip` | 64 位 Windows |
 
 ```bash
-tar -xzf mcp-ops_0.5.1_linux_amd64.tar.gz
-sudo mv mcp-ops_0.5.1_linux_amd64/opsctl /usr/local/bin/
+tar -xzf mcp-ops_0.6.0_linux_amd64.tar.gz
+sudo mv mcp-ops_0.6.0_linux_amd64/opsctl /usr/local/bin/
 chmod +x /usr/local/bin/opsctl
-opsctl version          # 输出 mcp-ops 0.5.1
+opsctl version          # 输出 mcp-ops 0.6.0
 
 # 校验完整性（可选）
 sha256sum -c SHA256SUMS
@@ -109,7 +109,7 @@ go build -o bin/opsctl ./cmd/opsctl
 自行打全平台发布包：
 
 ```bash
-./scripts/release.sh 0.5.1        # 产出 dist/ 下的 5 个平台包 + SHA256SUMS
+./scripts/release.sh 0.6.0        # 产出 dist/ 下的 5 个平台包 + SHA256SUMS
 HOST_ONLY=1 ./scripts/release.sh  # 只编当前平台，快速验证
 ```
 
@@ -177,7 +177,7 @@ databases:
 
 ```bash
 opsctl host -config /home/you/.config/mcp-ops/config.yaml
-# 输出：mcp-ops host v0.5.1 — provider=..., tools=68（内置 7 大 server + SSH/DB/Web/Postman）
+# 输出：mcp-ops host v0.6.0 — provider=..., tools=68（内置 7 大 server + SSH/DB/Web/Postman）
 ```
 
 进入 REPL 后直接说人话：
@@ -195,7 +195,9 @@ mcp-ops> 看看 web1 的磁盘和内存，再查一下 main-mysql 里 users 表�
 web1 根分区使用率 62%，可用 18G；内存 16G 中已用 9.8G。users 表共 12345 行。
 ```
 
-REPL 内置命令：`/tools` 列出全部工具、`/reset` 清空会话上下文、`/quit` 退出。
+REPL 内置命令：`/tools` 列出全部工具、`/resources` 列出资源清单（`/resources <server> <uri>` 读取指定资源）、`/prompts` 列出提示词清单（`/prompts <server> <name>` 获取提示词内容）、`/reset` 清空会话上下文、`/quit` 退出。
+
+> `/resources` `/prompts` 只会请求**握手时声明了对应能力**的外部 MCP server——未声明的 server 会被自动跳过，不会拖慢启动。
 
 > 配置了 `mcp_servers` 时，host 会逐个拉起并打印 `✅ 已加载外部 MCP server "xxx"`；某个 server 启动失败只打印 `⚠️` 警告并跳过，不影响其余工具。
 
@@ -497,6 +499,9 @@ postman:
 
 - 变量作用域：local > environment > collection，`{{var}}` 迭代解析（支持 collection 变量引用 environment 变量），内置 `$guid`/`$timestamp`/`$randomInt`
 - test script 用 goja 纯 Go JS 引擎执行，支持 `pm.test`/`pm.expect`/`pm.response` 及 chai 风格断言子集（equal/eql/include/above/below/oneOf/property/lengthOf/not 等）
+- 响应头断言：`pm.response.to.have.header("Content-Type", "application/json")`（value 可省略，只检查头存在）
+- **pre-request script**：发送前执行，`pm.variables.set("k","v")` / `pm.environment.set("k","v")` 写回的变量参与本次请求的 `{{k}}` 替换
+- **`pm.sendRequest(options, callback)`**：脚本内同步发起任意 HTTP 请求（如先取 token 再测接口），`options` 支持 `{ url, method, header, body }`，响应对象同样支持 `json()`/`text()`/`code`/`headers` 与 chai 断言
 - 断言失败会返回可读错误信息；无显式断言时以 2xx/3xx 判定通过
 
 ### 4.10 完整示例
@@ -1185,4 +1190,4 @@ REPL 命令：/tools  /reset  /quit
 
 ---
 
-*本手册对应 mcp-ops v0.5.1。实现细节以仓库代码为准；配置字段变更请同步更新本文件与 `config.example.yaml`。*
+*本手册对应 mcp-ops v0.6.0。实现细节以仓库代码为准；配置字段变更请同步更新本文件与 `config.example.yaml`。*

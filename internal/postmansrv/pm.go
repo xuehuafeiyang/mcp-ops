@@ -25,14 +25,21 @@ type pmRuntime struct {
 	vars    *VarStore
 	resp    *Response
 	results []TestResult
+	// do 是 pm.sendRequest 的 HTTP 执行器（由引擎注入）。
+	do func(method, url string, headers map[string]string, body []byte) (*Response, error)
 }
 
+// httpDoer 定义 pm.sendRequest 需要的 HTTP 执行能力。
+type httpDoer func(method, url string, headers map[string]string, body []byte) (*Response, error)
+
 // newPMRuntime 构造 goja 运行时并注入 pm 对象。
-func newPMRuntime(vars *VarStore, resp *Response) *pmRuntime {
+// resp 可为 nil（pre-request script 场景）；do 可为 nil（禁用 pm.sendRequest）。
+func newPMRuntime(vars *VarStore, resp *Response, do httpDoer) *pmRuntime {
 	p := &pmRuntime{
 		vm:   goja.New(),
 		vars: vars,
 		resp: resp,
+		do:   do,
 	}
 	p.vm.SetFieldNameMapper(nil) // 使用默认命名，手动控制属性名
 	p.inject()
@@ -73,32 +80,13 @@ func (p *pmRuntime) inject() {
 		return p.buildExpecter(call.Argument(0), false)
 	})
 
-	// pm.response：数据属性 + 断言链（to/be/have/not 等指向 status code 断言器）
-	respObj := vm.NewObject()
-	respObj.Set("code", p.resp.Status)
-	respObj.Set("status", p.resp.StatusText)
-	respObj.Set("responseTime", p.resp.ResponseTime)
-	hdrs := vm.NewObject()
-	for k, v := range p.resp.Headers {
-		hdrs.Set(k, v)
-	}
-	respObj.Set("headers", hdrs)
-	respObj.Set("text", func() string { return string(p.resp.Body) })
-	respObj.Set("json", func() goja.Value {
-		var v any
-		if err := json.Unmarshal(p.resp.Body, &v); err != nil {
-			return goja.Undefined()
-		}
-		return vm.ToValue(v)
+	// pm.response：数据属性 + 断言链（含 header 断言）
+	pm.Set("response", p.buildResponseObject(p.resp))
+
+	// pm.sendRequest：脚本内发起子请求（同步阻塞，返回 pm.response 风格对象）
+	pm.Set("sendRequest", func(call goja.FunctionCall) goja.Value {
+		return p.sendRequest(call)
 	})
-	// 断言链：pm.response.to.have.status(200) 中的 status 是断言方法，
-	// 与 pm.response.status（状态文本）分离，避免命名冲突。
-	expObj := p.buildExpecter(vm.ToValue(float64(p.resp.Status)), false).(*goja.Object)
-	for _, w := range []string{"to", "be", "been", "is", "that", "which", "and", "have", "has", "of", "at"} {
-		respObj.Set(w, expObj)
-	}
-	respObj.Set("not", expObj.Get("not"))
-	pm.Set("response", respObj)
 
 	// pm.environment / pm.variables / pm.collectionVariables
 	pm.Set("environment", p.buildVarScope("environment"))
@@ -111,6 +99,124 @@ func (p *pmRuntime) inject() {
 	pm.Set("info", info)
 
 	vm.Set("pm", pm)
+}
+
+// buildResponseObject 构造 pm.response 风格的 goja 对象（含 chai 断言链与 header 断言）。
+func (p *pmRuntime) buildResponseObject(resp *Response) *goja.Object {
+	vm := p.vm
+	o := vm.NewObject()
+	if resp == nil {
+		o.Set("code", 0)
+		o.Set("status", "")
+		o.Set("responseTime", 0)
+		o.Set("headers", vm.NewObject())
+		o.Set("text", func() string { return "" })
+		o.Set("json", func() goja.Value { return goja.Undefined() })
+		return o
+	}
+	o.Set("code", resp.Status)
+	o.Set("status", resp.StatusText)
+	o.Set("responseTime", resp.ResponseTime)
+	hdrs := vm.NewObject()
+	for k, v := range resp.Headers {
+		hdrs.Set(k, v)
+	}
+	o.Set("headers", hdrs)
+	o.Set("text", func() string { return string(resp.Body) })
+	o.Set("json", func() goja.Value {
+		var v any
+		if err := json.Unmarshal(resp.Body, &v); err != nil {
+			return goja.Undefined()
+		}
+		return vm.ToValue(v)
+	})
+
+	// 断言链：pm.response.to.have.status(200) 中的 status 是断言方法，
+	// 与 pm.response.status（状态文本）分离，避免命名冲突。
+	expObj := p.buildExpecter(vm.ToValue(float64(resp.Status)), false).(*goja.Object)
+	// header(name) / header(name, value) 断言（header 名大小写不敏感）
+	expObj.Set("header", func(call goja.FunctionCall) goja.Value {
+		name := call.Argument(0).String()
+		actual, ok := lookupHeader(resp.Headers, name)
+		if len(call.Arguments) >= 2 {
+			want := call.Argument(1).String()
+			if !ok || actual != want {
+				panic(vm.ToValue(fmt.Sprintf("断言失败：期望 header %s = %s", name, want)))
+			}
+		} else if !ok {
+			panic(vm.ToValue(fmt.Sprintf("断言失败：缺少 header %s", name)))
+		}
+		return expObj
+	})
+	for _, w := range []string{"to", "be", "been", "is", "that", "which", "and", "have", "has", "of", "at"} {
+		o.Set(w, expObj)
+	}
+	o.Set("not", expObj.Get("not"))
+	return o
+}
+
+// sendRequest 实现 pm.sendRequest：接受 URL 字符串或 request 对象，同步执行并返回响应对象。
+func (p *pmRuntime) sendRequest(call goja.FunctionCall) goja.Value {
+	vm := p.vm
+	if p.do == nil {
+		panic(vm.ToValue("pm.sendRequest: 未注入 HTTP 执行器"))
+	}
+	method, urlStr, headers, body := parseSendRequestArg(call.Argument(0))
+	urlStr = p.vars.Replace(urlStr)
+	resp, err := p.do(method, urlStr, headers, body)
+	if err != nil {
+		panic(vm.ToValue("pm.sendRequest 失败: " + err.Error()))
+	}
+	return p.buildResponseObject(resp)
+}
+
+// parseSendRequestArg 解析 pm.sendRequest 的参数（字符串或对象）。
+func parseSendRequestArg(arg goja.Value) (method, urlStr string, headers map[string]string, body []byte) {
+	method, headers = "GET", map[string]string{}
+	if arg == nil || goja.IsUndefined(arg) {
+		return
+	}
+	exported := arg.Export()
+	switch v := exported.(type) {
+	case string:
+		urlStr = v
+	case map[string]any:
+		if m, _ := v["method"].(string); m != "" {
+			method = strings.ToUpper(m)
+		}
+		if u, _ := v["url"].(string); u != "" {
+			urlStr = u
+		}
+		if h, ok := v["header"].(map[string]any); ok {
+			for k, hv := range h {
+				headers[k] = fmt.Sprintf("%v", hv)
+			}
+		}
+		if b, ok := v["body"]; ok {
+			switch tb := b.(type) {
+			case string:
+				body = []byte(tb)
+			case map[string]any:
+				if raw, _ := tb["raw"].(string); raw != "" {
+					body = []byte(raw)
+				}
+			}
+		}
+	default:
+		// 兜底：当作字符串
+		urlStr = arg.String()
+	}
+	return
+}
+
+// lookupHeader 大小写不敏感地查找 header。
+func lookupHeader(headers map[string]string, name string) (string, bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // buildVarScope 构造 {get, set, has} 的变量作用域对象。

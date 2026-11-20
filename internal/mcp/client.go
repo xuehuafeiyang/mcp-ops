@@ -14,12 +14,13 @@ import (
 // Client 是 host 侧的 MCP 客户端：连接一个自研 MCP Server
 // （Streamable HTTP），完成 initialize 握手后调用 tools/list 与 tools/call。
 type Client struct {
-	name     string // 展示名，例如 "ssh" / "db"
-	baseURL  string // 例如 http://127.0.0.1:8801/mcp
-	token    string
-	http     *http.Client
-	sessID   atomic.Value // string
-	nextID   atomic.Int64
+	name    string // 展示名，例如 "ssh" / "db"
+	baseURL string // 例如 http://127.0.0.1:8801/mcp
+	token   string
+	http    *http.Client
+	sessID  atomic.Value // string
+	nextID  atomic.Int64
+	caps    ServerCaps // 握手时 server 声明的能力
 }
 
 func NewClient(name, baseURL, token string) *Client {
@@ -55,6 +56,7 @@ func (c *Client) Initialize() error {
 	if result.ProtocolVersion != ProtocolVersion {
 		return fmt.Errorf("server %s protocol %q != %q", c.name, result.ProtocolVersion, ProtocolVersion)
 	}
+	c.caps = result.Capabilities // 记录 server 声明的能力
 	// 发送 initialized 通知（协议要求；服务器返回 202）
 	_ = c.notify(MethodInitialized, nil)
 	return nil
@@ -82,18 +84,70 @@ func (c *Client) CallTool(name string, args map[string]any) (*CallToolResult, er
 	return &result, nil
 }
 
-// ResultText 把 CallToolResult 的所有 text 块拼成一个字符串
-func (r *CallToolResult) ResultText() string {
-	var sb strings.Builder
-	for _, c := range r.Content {
-		if c.Type == "text" {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
-			sb.WriteString(c.Text)
-		}
+// ListResources 拉取资源清单。仅当握手时 server 声明了 resources 能力才发请求。
+func (c *Client) ListResources() ([]Resource, error) {
+	if c.caps.Resources == nil {
+		return nil, nil
 	}
-	return sb.String()
+	var result ListResourcesResult
+	if _, err := c.call(MethodResourcesList, map[string]any{}, &result); err != nil {
+		return nil, fmt.Errorf("resources/list %s: %w", c.name, err)
+	}
+	return result.Resources, nil
+}
+
+// ReadResource 读取单个资源内容。
+func (c *Client) ReadResource(uri string) (*ResourceContents, error) {
+	if c.caps.Resources == nil {
+		return nil, fmt.Errorf("server %s 未声明 resources 能力", c.name)
+	}
+	var result ReadResourceResult
+	if _, err := c.call(MethodResourcesRead, ReadResourceParams{URI: uri}, &result); err != nil {
+		return nil, fmt.Errorf("resources/read %s: %w", c.name, err)
+	}
+	if len(result.Contents) == 0 {
+		return nil, fmt.Errorf("resources/read %s: empty contents", c.name)
+	}
+	return &result.Contents[0], nil
+}
+
+// ListResourceTemplates 拉取资源模板清单。
+func (c *Client) ListResourceTemplates() ([]ResourceTemplate, error) {
+	if c.caps.Resources == nil {
+		return nil, nil
+	}
+	var result ListResourceTemplatesResult
+	if _, err := c.call(MethodResourcesTemplatesList, map[string]any{}, &result); err != nil {
+		return nil, fmt.Errorf("resources/templates/list %s: %w", c.name, err)
+	}
+	return result.ResourceTemplates, nil
+}
+
+// ListPrompts 拉取提示词清单。仅当握手时 server 声明了 prompts 能力才发请求。
+func (c *Client) ListPrompts() ([]Prompt, error) {
+	if c.caps.Prompts == nil {
+		return nil, nil
+	}
+	var result ListPromptsResult
+	if _, err := c.call(MethodPromptsList, map[string]any{}, &result); err != nil {
+		return nil, fmt.Errorf("prompts/list %s: %w", c.name, err)
+	}
+	return result.Prompts, nil
+}
+
+// GetPrompt 获取指定提示词。
+func (c *Client) GetPrompt(name string, args map[string]any) (*GetPromptResult, error) {
+	if c.caps.Prompts == nil {
+		return nil, fmt.Errorf("server %s 未声明 prompts 能力", c.name)
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	var result GetPromptResult
+	if _, err := c.call(MethodPromptsGet, GetPromptParams{Name: name, Arguments: args}, &result); err != nil {
+		return nil, fmt.Errorf("prompts/get %s: %w", c.name, err)
+	}
+	return &result, nil
 }
 
 func (c *Client) call(method string, params any, result any) (http.Header, error) {

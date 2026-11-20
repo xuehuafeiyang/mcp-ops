@@ -29,15 +29,15 @@
 
 ## 发布包
 
-`./scripts/release.sh 0.5.1` 产出 `dist/` 下五个平台的静态二进制包与校验和：
+`./scripts/release.sh 0.6.0` 产出 `dist/` 下五个平台的静态二进制包与校验和：
 
 | 包 | 平台 |
 |---|---|
-| `mcp-ops_0.5.1_linux_amd64.tar.gz` | x86_64 Linux |
-| `mcp-ops_0.5.1_linux_arm64.tar.gz` | ARM64 Linux |
-| `mcp-ops_0.5.1_darwin_amd64.tar.gz` | Intel Mac |
-| `mcp-ops_0.5.1_darwin_arm64.tar.gz` | Apple Silicon |
-| `mcp-ops_0.5.1_windows_amd64.zip` | Windows x64 |
+| `mcp-ops_0.6.0_linux_amd64.tar.gz` | x86_64 Linux |
+| `mcp-ops_0.6.0_linux_arm64.tar.gz` | ARM64 Linux |
+| `mcp-ops_0.6.0_darwin_amd64.tar.gz` | Intel Mac |
+| `mcp-ops_0.6.0_darwin_arm64.tar.gz` | Apple Silicon |
+| `mcp-ops_0.6.0_windows_amd64.zip` | Windows x64 |
 
 每个包内含 `opsctl`、`config.example.yaml`、`MANUAL.md`（手册）、`README.md`、`examples/`；`dist/SHA256SUMS` 用于完整性校验。
 
@@ -255,13 +255,16 @@ Go 原生的本地 Postman 测试引擎，解析 **Collection v2.1 JSON + enviro
 | `postman_run_collection` | 运行整个 collection，返回通过/失败统计与逐请求结果 |
 
 - **变量替换**：`{{变量}}` 按 local → environment → collection 作用域迭代解析（支持嵌套引用），内置 `$guid`/`$timestamp`/`$randomInt` 动态变量
-- **JS 断言**：goja 纯 Go JS 引擎，实现 `pm.test` / `pm.expect` / `pm.response`（`code`/`status`/`responseTime`/`headers`/`text()`/`json()`）与 chai 风格断言子集（equal/eql/include/above/below/oneOf/property/lengthOf/not 等）
+- **JS 断言**：goja 纯 Go JS 引擎，实现 `pm.test` / `pm.expect` / `pm.response`（`code`/`status`/`responseTime`/`headers`/`text()`/`json()`）与 chai 风格断言子集（equal/eql/include/above/below/oneOf/property/lengthOf/not 等），支持 `pm.response.to.have.header(name[, value])` 响应头断言
+- **Pre-request Script**：请求发送前执行 pre-request script，`pm.variables.set` / `pm.environment.set` 写回的变量参与本次请求的 `{{变量}}` 替换
+- **pm.sendRequest**：脚本内同步发起任意 HTTP 请求（如先取 token 再测接口），响应支持与 test script 相同的断言链
 - **报告**：逐请求返回状态码/耗时/响应预览/断言明细，collection 级别汇总 passed/failed
 
 ### host（`opsctl host`）
 
 - **LLM Provider 抽象**：`openai`（OpenAI 兼容——DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM 通用）与 `anthropic`（原生 messages + tool_use）双适配器，配置切换
 - **Agent 循环**：LLM → 工具调用 → 结果回传 → 继续推理，直到给出最终回答；`max_turns`（默认 30）防失控
+- **MCP 协议能力完整**：除 Tools 外，双端（HTTP + stdio）支持 **Resources**（`resources/list`/`read`/`templates/list`）、**Prompts**（`prompts/list`/`get`）、**Roots**（`roots/list`）、**Logging**（`logging/setLevel`）、**Progress 通知**（SSE 流式回传进度）
 - **内置能力进程内注册**：SSH/DB/Web 不再需要单独起 HTTP server，`opsctl host` 一条命令即用
 - **外部 server 挂载**：`mcp_servers` 段拉起 stdio 子进程（`npx` / 全局命令），握手后合并工具
 - 工具名冲突时自动改名为 `server__tool`，调用时翻译回 server 端原始名
