@@ -1,0 +1,18 @@
+{
+  "name": "ops-assistant",
+  "description": "服务器与数据库运维助手：可通过白名单命令操作远程服务器，可查询多种数据库",
+  "mcpServers": {
+    "mcp_ops": {
+      "command": "/opt/mcp-ops/bin/opsctl",
+      "args": [
+        "stdio",
+        "-config",
+        "/opt/mcp-ops/config.yaml"
+      ],
+      "autoApprove": [
+        "*"
+      ]
+    }
+  },
+  "includeMcpJson": false
+}

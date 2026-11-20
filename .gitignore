@@ -1,0 +1,33 @@
+# ---- 构建产物 ----
+/bin/
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+
+# ---- 本地配置（含真实凭据，严禁入库）----
+config.yaml
+config.local.yaml
+*.local.yaml
+
+# ---- 运行时数据 ----
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.memory.json
+
+# ---- IDE / 编辑器 ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
+
+# ---- 依赖 ----
+vendor/

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "mcp_ops": {
+      "command": "/opt/mcp-ops/bin/opsctl",
+      "args": [
+        "stdio",
+        "-config",
+        "/opt/mcp-ops/config.yaml"
+      ],
+      "env": {},
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ],
+      "disabledTools": []
+    }
+  }
+}

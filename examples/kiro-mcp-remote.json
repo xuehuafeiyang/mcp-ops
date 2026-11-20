@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "mcp_ops_ssh": {
+      "url": "http://127.0.0.1:8801/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_OPS_SSH_TOKEN}"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ]
+    },
+    "mcp_ops_db": {
+      "url": "http://127.0.0.1:8802/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_OPS_DB_TOKEN}"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "*"
+      ]
+    }
+  }
+}

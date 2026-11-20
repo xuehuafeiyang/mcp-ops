@@ -1,0 +1,26 @@
+# 注意：filesystem / memory / sequential-thinking / everything / fetch / git /
+# playwright 这 7 个 server 已由 opsctl 的 builtins 段
+# （config.yaml）Go 原生内置，无需在此再通过 npx / 全局命令挂载。
+#
+# 本文件仅演示如何挂载 builtins 之外的「额外」stdio MCP server。
+# 把这段合并进 config.yaml 的 mcp_servers: 段，然后运行：
+#   opsctl host -config config.yaml
+#
+# 机制：
+#   - 每个 server 以 stdio 子进程运行（newline-delimited JSON-RPC）
+#   - npx -y 首次会联网下载包，之后走缓存
+#   - 工具名冲突时自动加 "<name>__" 前缀
+#   - disabled: true 可临时停用；env 可为每个 server 附加环境变量
+
+mcp_servers:
+  # 示例 1：再次拉起一个隔离运行的 opsctl stdio（把内置工具当外部 server）
+  # - name: opsctl-isolated
+  #   command: /opt/mcp-ops/bin/opsctl
+  #   args: ["stdio", "-config", "/opt/mcp-ops/config.yaml"]
+
+  # 示例 2：任意社区/自建 stdio server（需先全局安装）
+  # - name: my-server
+  #   command: my-mcp-server
+  #   args: ["--some-flag"]
+  #   env: {"PATH": "/extra/bin"}
+  #   disabled: false

@@ -1,0 +1,51 @@
+llm:
+  provider: openai
+  openai:
+    base_url: http://127.0.0.1:1/v1
+    api_key: dummy
+    model: dummy
+  max_turns: 5
+
+ssh_server:
+  listen: 127.0.0.1:18801
+  token: test-token
+db_server:
+  listen: 127.0.0.1:18802
+  token: test-token
+
+ssh_hosts:
+  - name: local
+    host: 127.0.0.1
+    port: 2222
+    user: root
+    auth:
+      private_key: /root/.ssh/opsctl_test
+    allowed_commands: ["*"]     # 全部命令放行
+    command_timeout: 5s
+
+databases:
+  - name: local-redis
+    type: redis
+    host: 127.0.0.1
+    port: 6379
+    database: "0"
+    query_timeout: 3s
+
+  - name: local-pg
+    type: postgres
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: secret
+    database: opsdb
+    query_timeout: 3s
+
+  - name: pg-via-ssh          # 经 local 主机的 SSH 隧道连同一个 PG
+    type: postgres
+    host: 127.0.0.1
+    port: 5432
+    user: postgres
+    password: secret
+    database: opsdb
+    via_ssh: local
+    query_timeout: 3s
