@@ -157,9 +157,9 @@ type graphData struct {
 }
 
 type memoryStore struct {
-	mu      sync.Mutex
-	path    string
-	entities map[string]*entity
+	mu        sync.Mutex
+	path      string
+	entities  map[string]*entity
 	relations []relation
 }
 

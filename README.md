@@ -172,9 +172,9 @@ builtins:
 | everything | 8 | 协议测试工具子集（echo/add/printEnv/复杂对象/长操作） |
 | fetch | 1 | 网页抓取转 Markdown（复用 websrv，robots + SSRF 防护） |
 | git | 12 | status/diff/commit/add/reset/log/branch/checkout/show |
-| playwright | 15 | 浏览器自动化（导航/快照/点击/输入/截图/执行JS/标签页/网络/控制台/等待） |
+| playwright | 24 | 浏览器自动化（导航/后退/快照/截图/点击/输入/下拉选择/文件上传/对话框/拖拽投放/媒体模拟/执行JS/任意JS/标签页/网络详情/控制台/等待） |
 
-> playwright 基于 chromedp/CDP 引擎，覆盖导航、快照、点击、输入、截图、执行 JS、控制台与网络请求抓取等核心能力。
+> playwright 基于 chromedp/CDP 引擎，覆盖导航/后退、快照、点击、输入、下拉选择、文件上传、JS 对话框、拖拽投放、媒体模拟、任意 JS、控制台与网络请求（含单请求详情）等能力，与官方 @playwright/mcp 工具面持平。
 
 ## 挂载额外外部 MCP Server
 

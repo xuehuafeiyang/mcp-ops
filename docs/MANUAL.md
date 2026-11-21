@@ -442,7 +442,7 @@ mcp_servers:
 | everything | 8 | echo / add / longRunningOperation / printEnv / getComplexObject / annotatedMessage / sampleLLM / getTinyImage |
 | fetch | 1 | fetch（复用 websrv 抓取器，robots + SSRF 防护） |
 | git | 12 | git_status / git_diff / git_diff_staged / git_diff_unstaged / git_commit / git_add / git_reset / git_log / git_create_branch / git_checkout / git_show / git_branch |
-| playwright | 15 | browser_navigate / browser_snapshot / browser_take_screenshot / browser_click / browser_type / browser_fill_form / browser_evaluate / browser_press_key / browser_hover / browser_wait_for / browser_resize / browser_console_messages / browser_network_requests / browser_tabs / browser_close |
+| playwright | 24 | browser_navigate / browser_navigate_back / browser_snapshot / browser_take_screenshot / browser_click / browser_type / browser_select_option / browser_file_upload / browser_handle_dialog / browser_drag / browser_drop / browser_emulate_media / browser_fill_form / browser_evaluate / browser_run_code_unsafe / browser_press_key / browser_hover / browser_wait_for / browser_resize / browser_console_messages / browser_network_requests / browser_network_request / browser_tabs / browser_close |
 
 ```yaml
 builtins:
@@ -469,7 +469,7 @@ builtins:
 
 要点：
 
-- playwright 基于 chromedp/CDP 引擎，快照返回 `[ref=...]` 作为后续 click/type/hover 的选择器；`browser_network_requests` 可查看当前页面的网络请求（方法/URL/状态码/资源类型）
+- playwright 基于 chromedp/CDP 引擎，快照返回 `[ref=...]` 作为后续 click/type/hover/select/upload 的选择器；点击/拖拽走页面合成事件（绕开 Edge 147 CDP 鼠标命中测试竞态），`browser_network_requests` 列出请求（含 `rid=` 前缀），`browser_network_request` 按 rid 查看响应头与响应体
 - `filesystem` 的所有路径都会解析后校验落在 `allowed_directories` 内，越界（含 symlink 逃逸）直接拒绝
 - `git` 底层调用系统 `git` 命令，参数数组传递不经过 shell，无命令注入面
 - `everything` 里的 `sampleLLM` / `getTinyImage` 依赖 sampling 与图片内容块，当前文本传输下会返回「不支持」说明
@@ -897,12 +897,12 @@ FETCH ERROR: fetch https://x: dial tcp ...: i/o timeout
 
 ### 7.8 7 大内置工具
 
-filesystem / memory / sequential-thinking / everything / fetch / git / playwright 共 57 个内置工具已在 4.8 节完整列出。要点：
+filesystem / memory / sequential-thinking / everything / fetch / git / playwright 共 66 个内置工具已在 4.8 节完整列出。要点：
 
 - **filesystem**：所有路径须落在 `builtins.filesystem.allowed_directories` 内，越界拒绝
 - **memory**：`create_entities` → `create_relations` → `add_observations` 构建知识图谱，`read_graph` / `search_nodes` / `open_nodes` 查询，自动持久化到 `storage_path`
 - **git**：工具未传 `repo_path` 时用 `builtins.git.default_repo`
-- **playwright**：先 `browser_snapshot` 拿 `[ref=...]`，再用 `browser_click` / `browser_type` 操作；`browser_network_requests` 查看网络请求，`browser_console_messages` 查看控制台
+- **playwright**：先 `browser_snapshot` 拿 `[ref=...]`，再用 `browser_click` / `browser_type` / `browser_select_option` / `browser_file_upload` 操作，弹窗用 `browser_handle_dialog`，拖拽用 `browser_drag` / `browser_drop`；`browser_network_requests` 查看请求列表、`browser_network_request` 看单个请求详情，`browser_console_messages` 查看控制台
 
 ### 7.9 Postman 测试工具
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
@@ -30,10 +31,11 @@ type browserEngine struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 
-	tabs     []*browserTab
-	active   int
-	nextID   int
-	started  bool
+	tabs    []*browserTab
+	active  int
+	nextID  int
+	started bool
+	dragPos *dragPoint // 进行中的拖拽位置（browser_drag release=false 后未释放）
 }
 
 type browserTab struct {
@@ -41,16 +43,20 @@ type browserTab struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	console []string
-	network []netEntry
+	mu            sync.Mutex
+	console       []string
+	network       []netEntry
+	pendingDialog *dialogInfo // 待处理的 JS 对话框（alert/confirm/prompt）
 }
 
 type netEntry struct {
-	Method string
-	URL    string
-	Status int64
-	Type   string
+	ReqID   network.RequestID
+	Method  string
+	URL     string
+	Status  int64 // EventLoadingFailed 后为 -1
+	Type    string
+	MIME    string
+	Headers network.Headers // 响应头（browser_network_request 详情用）
 }
 
 // RegisterBrowserTools 注册 playwright 浏览器工具（chromedp/CDP 引擎）。
@@ -81,22 +87,40 @@ func (e *browserEngine) ensure() error {
 	}
 	e.chrome = chrome
 
-	opts := []chromedp.ExecAllocatorOption{
+	// [实验中] 完整复刻官方 @playwright/mcp 的 Edge 启动参数（headed、无禁 GPU）
+	var opts []chromedp.ExecAllocatorOption
+	opts = append(opts,
 		chromedp.ExecPath(chrome),
+		// 精简 flags（经 mouseprobe 二分验证）：禁 GPU/强制缩放等会干扰
+		// Input 域命中测试的 flag 一律不加
+		chromedp.Flag("no-first-run", ""),
+		chromedp.Flag("no-default-browser-check", ""),
+		chromedp.Flag("disable-infobars", ""),
 		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-background-networking", true),
-	}
+		chromedp.WindowSize(1280, 800),
+	)
 	if dir := e.cfg.ProfileDir(); dir != "" {
 		opts = append(opts, chromedp.UserDataDir(dir))
 	}
 	if e.cfg.IsHeadless() {
 		opts = append(opts, chromedp.Headless)
+		// headless 下允许软件渲染合成（禁 GPU 且无合成表面时 Input 域
+		// 鼠标事件的命中测试会失效——mouseup/mousemove 全落到 body）
+		opts = append(opts, chromedp.Flag("enable-unsafe-swiftshader", ""))
 	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	// MO_CDP_DEBUG=1 时输出 CDP 线缆日志（排障用）
+	var browserCtx context.Context
+	var browserCancel context.CancelFunc
+	if os.Getenv("MO_CDP_DEBUG") != "" {
+		browserCtx, browserCancel = chromedp.NewContext(allocCtx, chromedp.WithDebugf(
+			func(format string, args ...any) { fmt.Fprintf(os.Stderr, "[cdp] "+format+"\n", args...) }))
+	} else {
+		browserCtx, browserCancel = chromedp.NewContext(allocCtx)
+	}
 
 	e.allocCtx, e.allocCancel = allocCtx, allocCancel
 	e.browserCtx, e.browserCancel = browserCtx, browserCancel
@@ -113,8 +137,9 @@ func (e *browserEngine) newTabLocked() (*browserTab, error) {
 	id := e.nextID
 	ctx, cancel := chromedp.NewContext(e.browserCtx)
 	t := &browserTab{id: id, ctx: ctx, cancel: cancel}
-	// 启用网络域并监听控制台/网络事件
+	// 启用网络域并监听控制台/网络/对话框事件
 	_ = chromedp.Run(ctx, network.Enable())
+	_ = chromedp.Run(ctx, page.Enable())
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch evt := ev.(type) {
 		case *runtime.EventConsoleAPICalled:
@@ -128,13 +153,42 @@ func (e *browserEngine) newTabLocked() (*browserTab, error) {
 				t.console = t.console[len(t.console)-200:]
 			}
 			t.mu.Unlock()
-		case *network.EventResponseReceived:
+		case *page.EventJavascriptDialogOpening:
+			t.mu.Lock()
+			t.pendingDialog = &dialogInfo{Type: string(evt.Type), Message: evt.Message, URL: evt.URL}
+			t.console = append(t.console, "[dialog] "+string(evt.Type)+": "+evt.Message)
+			if len(t.console) > 200 {
+				t.console = t.console[len(t.console)-200:]
+			}
+			t.mu.Unlock()
+		case *network.EventRequestWillBeSent:
 			t.mu.Lock()
 			t.network = append(t.network, netEntry{
-				Method: evt.Response.MimeType, URL: evt.Response.URL, Status: evt.Response.Status, Type: evt.Type.String(),
+				ReqID: evt.RequestID, Method: evt.Request.Method, URL: evt.Request.URL,
 			})
 			if len(t.network) > 200 {
 				t.network = t.network[len(t.network)-200:]
+			}
+			t.mu.Unlock()
+		case *network.EventResponseReceived:
+			t.mu.Lock()
+			for i := len(t.network) - 1; i >= 0; i-- {
+				if t.network[i].ReqID == evt.RequestID {
+					t.network[i].Status = evt.Response.Status
+					t.network[i].Type = evt.Type.String()
+					t.network[i].MIME = evt.Response.MimeType
+					t.network[i].Headers = evt.Response.Headers
+					break
+				}
+			}
+			t.mu.Unlock()
+		case *network.EventLoadingFailed:
+			t.mu.Lock()
+			for i := len(t.network) - 1; i >= 0; i-- {
+				if t.network[i].ReqID == evt.RequestID {
+					t.network[i].Status = -1
+					break
+				}
 			}
 			t.mu.Unlock()
 		}
@@ -158,6 +212,9 @@ func (e *browserEngine) run(actions ...chromedp.Action) error {
 	tab := e.tabs[idx]
 	e.mu.Unlock()
 
+	if tabHasPendingDialog(tab) {
+		return fmt.Errorf("页面有待处理的 JS 对话框（alert/confirm/prompt），先调用 browser_handle_dialog")
+	}
 	ctx, cancel := context.WithTimeout(tab.ctx, 60*time.Second)
 	defer cancel()
 	return chromedp.Run(ctx, actions...)
@@ -171,6 +228,9 @@ func (e *browserEngine) eval(expr string) (any, error) {
 	e.mu.Lock()
 	tab := e.tabs[e.active]
 	e.mu.Unlock()
+	if tabHasPendingDialog(tab) {
+		return nil, fmt.Errorf("页面有待处理的 JS 对话框（alert/confirm/prompt），先调用 browser_handle_dialog")
+	}
 	ctx, cancel := context.WithTimeout(tab.ctx, 30*time.Second)
 	defer cancel()
 	var out any
@@ -274,11 +334,36 @@ func (e *browserEngine) screenshot(path string) (string, error) {
 	return path, nil
 }
 
+// click 用 JS 合成点击：focus + mousedown/mouseup 合成事件 + el.click()。
+// 不走 CDP Input 域——Edge 147 的 CDP 鼠标事件命中测试存在竞态
+// （browser_probe_test 多轮验证：元素监听时收时失），合成事件路径确定可用。
+// el.click() 产生 trusted click 事件，原生交互（链接跳转、checkbox 翻转）有效。
 func (e *browserEngine) click(ref string) error {
 	if ref == "" {
 		return fmt.Errorf("ref/selector 不能为空")
 	}
-	return e.run(chromedp.Click(ref, chromedp.ByQuery))
+	expr := fmt.Sprintf(`(() => {
+		const el = document.querySelector(%q);
+		if (!el) return 'not found';
+		el.scrollIntoView({block:'center'});
+		const r = el.getBoundingClientRect();
+		const x = r.x + r.width / 2, y = r.y + r.height / 2;
+		const o = {bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0};
+		if (typeof el.focus === 'function') { try { el.focus(); } catch (e) {} }
+		el.dispatchEvent(new MouseEvent('mousedown', o));
+		el.dispatchEvent(new MouseEvent('mousemove', o));
+		el.dispatchEvent(new MouseEvent('mouseup', o));
+		el.click();
+		return 'ok';
+	})()`, ref)
+	v, err := e.eval(expr)
+	if err != nil {
+		return err
+	}
+	if s, _ := v.(string); s == "not found" {
+		return fmt.Errorf("未找到元素 %s", ref)
+	}
+	return nil
 }
 
 func (e *browserEngine) typeText(ref, text string) error {
@@ -363,9 +448,17 @@ func (e *browserEngine) netList() string {
 	}
 	var b strings.Builder
 	for _, n := range t.network {
-		fmt.Fprintf(&b, "%d %s %s [%s]\n", n.Status, n.Method, n.URL, n.Type)
+		fmt.Fprintf(&b, "rid=%s %d %s %s [%s]\n", n.ReqID, n.Status, n.Method, n.URL, n.Type)
 	}
 	return b.String()
+}
+
+// tabHasPendingDialog 检查标签页是否有未响应的 JS 对话框。
+// 对话框打开期间目标页面被暂停，任何 CDP 命令都会被卡住，所以要快失败。
+func tabHasPendingDialog(t *browserTab) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pendingDialog != nil
 }
 
 // ---------- 标签页管理 ----------

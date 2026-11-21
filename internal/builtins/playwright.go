@@ -1,6 +1,7 @@
 package builtins
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -182,5 +183,116 @@ func RegisterPlaywright(s *mcp.Server, e *browserEngine) {
 		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
 			e.closeAll()
 			return mcp.TextResult("浏览器已关闭")
+		})
+
+	s.RegisterTool("browser_navigate_back",
+		"浏览器后退一步（没有更早历史时报错）。",
+		schema(``),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			if err := e.navigateBack(); err != nil {
+				return errR("%v", err)
+			}
+			t, _ := e.title()
+			return mcp.TextResult("已后退，当前标题: " + t)
+		})
+
+	s.RegisterTool("browser_select_option",
+		"选择下拉框选项（values 匹配 option 的 value 或可见文本，派发 change 事件）。",
+		schema(`"ref":{"type":"string","description":"<select> 的 ref 或 CSS selector"},
+			"values":{"type":"array","items":{"type":"string"}}`, "ref", "values"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			picked, err := e.selectOption(argString(args, "ref"), argStrings(args, "values"))
+			if err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult("已选中: " + picked)
+		})
+
+	s.RegisterTool("browser_file_upload",
+		"把本地文件设置到 file input（CDP 直挂，无需点击弹出系统选择框）。paths 必须是绝对路径。",
+		schema(`"ref":{"type":"string","description":"input[type=file] 的 ref 或 CSS selector"},
+			"paths":{"type":"array","items":{"type":"string"}}`, "ref", "paths"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			if err := e.uploadFiles(argString(args, "ref"), argStrings(args, "paths")); err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult(fmt.Sprintf("已挂载 %d 个文件", len(argStrings(args, "paths"))))
+		})
+
+	s.RegisterTool("browser_handle_dialog",
+		"处理页面 JS 对话框（alert/confirm/prompt）：accept=true 确认，promptText 用于 prompt 输入。",
+		schema(`"accept":{"type":"boolean"},"promptText":{"type":"string"}`, "accept"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			msg, err := e.handleDialog(argBool(args, "accept"), argString(args, "promptText"))
+			if err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult(msg)
+		})
+
+	s.RegisterTool("browser_drag",
+		"从起点元素按住左键拖到终点元素（mouse 事件模拟）。release=false 不释放，之后用 browser_drop 投放。",
+		schema(`"startRef":{"type":"string"},"endRef":{"type":"string"},
+			"steps":{"type":"integer","description":"插值步数，默认 6，上限 50"},
+			"release":{"type":"boolean","description":"默认 true"}`, "startRef", "endRef"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			release := true
+			if v, ok := args["release"].(bool); ok {
+				release = v
+			}
+			if err := e.drag(argString(args, "startRef"), argString(args, "endRef"),
+				argInt(args, "steps"), release); err != nil {
+				return errR("%v", err)
+			}
+			if release {
+				return mcp.TextResult("已拖拽并释放")
+			}
+			return mcp.TextResult("拖拽进行中（未释放），用 browser_drop 投放到目标元素")
+		})
+
+	s.RegisterTool("browser_drop",
+		"把进行中的拖拽移动到指定元素并释放（配合 browser_drag 的 release=false）。",
+		schema(`"ref":{"type":"string"}`, "ref"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			if err := e.drop(argString(args, "ref")); err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult("已释放拖拽")
+		})
+
+	s.RegisterTool("browser_emulate_media",
+		"模拟媒体环境：media=screen|print，colorScheme=light|dark 等；两项都留空则重置全部模拟。",
+		schema(`"media":{"type":"string"},"colorScheme":{"type":"string"}`),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			media, cs := argString(args, "media"), argString(args, "colorScheme")
+			if err := e.emulateMedia(media, cs); err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult(fmt.Sprintf("媒体模拟已设置 (media=%q colorScheme=%q)", media, cs))
+		})
+
+	s.RegisterTool("browser_network_request",
+		"查看单个网络请求详情（响应头 + 响应体，body 截断 20KB）。requestId 来自 browser_network_requests 输出的 rid= 前缀。",
+		schema(`"requestId":{"type":"string"}`, "requestId"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			d, err := e.netDetail(argString(args, "requestId"))
+			if err != nil {
+				return errR("%v", err)
+			}
+			return mcp.TextResult(d)
+		})
+
+	s.RegisterTool("browser_run_code_unsafe",
+		"在页面上下文执行任意 JS（表达式或 IIFE，自动等待 Promise，带命令行 API 与用户手势）。危险能力，仅供可信页面使用。",
+		schema(`"code":{"type":"string"}`, "code"),
+		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
+			v, err := e.runCode(argString(args, "code"))
+			if err != nil {
+				return errR("%v", err)
+			}
+			if b, ok := v.(json.RawMessage); ok {
+				return mcp.TextResult(string(b))
+			}
+			return mcp.TextResult(fmt.Sprintf("%v", v))
 		})
 }

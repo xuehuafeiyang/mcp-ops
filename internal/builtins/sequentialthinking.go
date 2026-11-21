@@ -25,32 +25,32 @@ func RegisterSequentialThinking(s *mcp.Server) {
 			"branchFromThought":{"type":"integer","description":"从哪一步分叉"},
 			"branchId":{"type":"string","description":"分叉标识"},
 			"needsMoreThoughts":{"type":"boolean"}`,
-		"thought", "nextThoughtNeeded", "thoughtNumber", "totalThoughts"),
+			"thought", "nextThoughtNeeded", "thoughtNumber", "totalThoughts"),
 		func(ctx mcp.CallContext, args map[string]any) *mcp.CallToolResult {
 			return mcp.TextResult(st.record(seqInput{
-				Thought:            argString(args, "thought"),
-				NextThoughtNeeded:  argBool(args, "nextThoughtNeeded"),
-				ThoughtNumber:      argInt(args, "thoughtNumber"),
-				TotalThoughts:      argInt(args, "totalThoughts"),
-				IsRevision:         argBool(args, "isRevision"),
-				RevisesThought:     argInt(args, "revisesThought"),
-				BranchFromThought:  argInt(args, "branchFromThought"),
-				BranchID:           argString(args, "branchId"),
-				NeedsMoreThoughts:  argBool(args, "needsMoreThoughts"),
+				Thought:           argString(args, "thought"),
+				NextThoughtNeeded: argBool(args, "nextThoughtNeeded"),
+				ThoughtNumber:     argInt(args, "thoughtNumber"),
+				TotalThoughts:     argInt(args, "totalThoughts"),
+				IsRevision:        argBool(args, "isRevision"),
+				RevisesThought:    argInt(args, "revisesThought"),
+				BranchFromThought: argInt(args, "branchFromThought"),
+				BranchID:          argString(args, "branchId"),
+				NeedsMoreThoughts: argBool(args, "needsMoreThoughts"),
 			}))
 		})
 }
 
 type seqInput struct {
-	Thought            string
-	NextThoughtNeeded  bool
-	ThoughtNumber      int
-	TotalThoughts      int
-	IsRevision         bool
-	RevisesThought     int
-	BranchFromThought  int
-	BranchID           string
-	NeedsMoreThoughts  bool
+	Thought           string
+	NextThoughtNeeded bool
+	ThoughtNumber     int
+	TotalThoughts     int
+	IsRevision        bool
+	RevisesThought    int
+	BranchFromThought int
+	BranchID          string
+	NeedsMoreThoughts bool
 }
 
 type seqThinker struct {

@@ -22,6 +22,19 @@ else
   PLATFORMS=(linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64)
 fi
 
+# 打 zip：优先 zip 命令，Windows/Git Bash 无 zip 时回退 PowerShell Compress-Archive
+make_zip() {
+  local src="$1" out="$2"
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$DIST" && zip -qr "${out##*/}" "${src##*/}")
+  else
+    local wsrc wout
+    wsrc="$(cygpath -w "$src")"
+    wout="$(cygpath -w "$out")"
+    powershell.exe -NoProfile -Command "Compress-Archive -Path '$wsrc' -DestinationPath '$wout' -Force"
+  fi
+}
+
 echo "==> 版本 v$VERSION，目标平台 ${#PLATFORMS[@]} 个"
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -50,7 +63,9 @@ for p in "${PLATFORMS[@]}"; do
     if [[ -d "$ROOT/$item" ]]; then
       cp -r "$ROOT/$item" "$stage/"
     else
-      cp "$ROOT/$item" "$stage/"
+      # 保留相对路径（如 docs/MANUAL.md），别拍平到包根目录
+      mkdir -p "$stage/$(dirname "$item")"
+      cp "$ROOT/$item" "$stage/$item"
     fi
   done
 
@@ -58,7 +73,7 @@ for p in "${PLATFORMS[@]}"; do
   cp "$ROOT/docs/MANUAL.md" "$stage/MANUAL.md"
 
   if [[ "$os" == "windows" ]]; then
-    (cd "$DIST" && zip -qr "$name.zip" "$name")
+    make_zip "$stage" "$DIST/$name.zip"
     rm -rf "$stage"
   else
     tar -czf "$DIST/$name.tar.gz" -C "$DIST" "$name"
