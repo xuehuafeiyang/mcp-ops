@@ -31,6 +31,8 @@ type browserEngine struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 
+	tmpDataDir string // shell 启动路径自建的临时 user-data-dir（关闭时清理）
+
 	tabs    []*browserTab
 	active  int
 	nextID  int
@@ -87,6 +89,32 @@ func (e *browserEngine) ensure() error {
 	}
 	e.chrome = chrome
 
+	// 首选 Shell 启动路径（Windows）：ShellExecute 拉起 + 固定调试端口 +
+	// RemoteAllocator 附着。CreateProcess 直启的 Edge 会静默退出，
+	// 详见 browserlaunch_windows.go 顶部注释。
+	if shellLaunchAvailable() {
+		if wsURL, ok := e.shellStart(chrome); ok {
+			allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL)
+			var browserCtx context.Context
+			var browserCancel context.CancelFunc
+			if os.Getenv("MO_CDP_DEBUG") != "" {
+				browserCtx, browserCancel = chromedp.NewContext(allocCtx, chromedp.WithDebugf(
+					func(format string, args ...any) { fmt.Fprintf(os.Stderr, "[cdp] "+format+"\n", args...) }))
+			} else {
+				browserCtx, browserCancel = chromedp.NewContext(allocCtx)
+			}
+			e.allocCtx, e.allocCancel = allocCtx, allocCancel
+			e.browserCtx, e.browserCancel = browserCtx, browserCancel
+			e.started = true
+			if _, err := e.newTabLocked(); err != nil {
+				e.teardownLocked()
+				return fmt.Errorf("连接浏览器失败: %w", err)
+			}
+			return nil
+		}
+		// Shell 启动失败 → 回退 ExecAllocator 直启
+	}
+
 	// [实验中] 完整复刻官方 @playwright/mcp 的 Edge 启动参数（headed、无禁 GPU）
 	var opts []chromedp.ExecAllocatorOption
 	opts = append(opts,
@@ -127,9 +155,63 @@ func (e *browserEngine) ensure() error {
 	e.started = true
 
 	if _, err := e.newTabLocked(); err != nil {
+		// 失败必须彻底复位：否则下次调用会在已废的 context 上重复
+		// Allocate，触发 chromedp 内部 close of closed channel panic
+		e.teardownLocked()
 		return fmt.Errorf("启动浏览器失败: %w", err)
 	}
 	return nil
+}
+
+// shellStart 用 ShellExecute 路径拉起浏览器并等待 CDP 就绪，返回 ws 调试地址。
+// 失败返回 ("", false)，由调用方回退到 ExecAllocator 直启。
+func (e *browserEngine) shellStart(chrome string) (string, bool) {
+	port, err := pickFreePort()
+	if err != nil {
+		return "", false
+	}
+	args := []string{
+		"--no-first-run", "--no-default-browser-check", "--disable-infobars",
+		"--no-sandbox", "--disable-dev-shm-usage", "--disable-background-networking",
+		"--window-size=1280,800",
+	}
+	if e.cfg.IsHeadless() {
+		// 禁 GPU 且无合成表面时 Input 域鼠标事件命中测试会失效
+		// （mouseup/mousemove 全落到 body），headless 下开软件渲染合成
+		args = append(args, "--headless", "--enable-unsafe-swiftshader")
+	}
+	dir := e.cfg.ProfileDir()
+	if dir == "" {
+		dir, err = os.MkdirTemp("", "mcp-ops-browser")
+		if err != nil {
+			return "", false
+		}
+		e.tmpDataDir = dir
+	}
+	args = append(args, "--user-data-dir="+dir,
+		fmt.Sprintf("--remote-debugging-port=%d", port), "about:blank")
+
+	if err := shellLaunchBrowser(chrome, args); err != nil {
+		return "", false
+	}
+	wsURL, err := waitCDP(port, 15*time.Second)
+	if err != nil {
+		return "", false
+	}
+	return wsURL, true
+}
+
+// teardownLocked 复位引擎状态并取消所有 context（持锁调用）。
+func (e *browserEngine) teardownLocked() {
+	if e.browserCancel != nil {
+		e.browserCancel()
+		e.browserCancel = nil
+	}
+	if e.allocCancel != nil {
+		e.allocCancel()
+		e.allocCancel = nil
+	}
+	e.started = false
 }
 
 func (e *browserEngine) newTabLocked() (*browserTab, error) {
@@ -137,9 +219,19 @@ func (e *browserEngine) newTabLocked() (*browserTab, error) {
 	id := e.nextID
 	ctx, cancel := chromedp.NewContext(e.browserCtx)
 	t := &browserTab{id: id, ctx: ctx, cancel: cancel}
-	// 启用网络域并监听控制台/网络/对话框事件
-	_ = chromedp.Run(ctx, network.Enable())
-	_ = chromedp.Run(ctx, page.Enable())
+	// 启用网络域并监听控制台/网络/对话框事件。
+	// 错误必须传播：吞掉后同 context 的第二次 Run 会重复 Allocate，
+	// 触发 chromedp close of closed channel panic
+	if err := chromedp.Run(ctx, network.Enable()); err != nil {
+		cancel()
+		e.nextID--
+		return nil, fmt.Errorf("启用网络域失败: %w", err)
+	}
+	if err := chromedp.Run(ctx, page.Enable()); err != nil {
+		cancel()
+		e.nextID--
+		return nil, fmt.Errorf("启用页面域失败: %w", err)
+	}
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch evt := ev.(type) {
 		case *runtime.EventConsoleAPICalled:
@@ -535,13 +627,15 @@ func (e *browserEngine) closeAll() {
 	}
 	e.tabs = nil
 	e.active = -1
-	if e.browserCancel != nil {
-		e.browserCancel()
+	e.teardownLocked()
+	// shell 启动路径自建的临时 user-data-dir：浏览器优雅退出后清理（尽力而为）
+	if dir := e.tmpDataDir; dir != "" {
+		e.tmpDataDir = ""
+		go func() {
+			time.Sleep(2 * time.Second)
+			_ = os.RemoveAll(dir)
+		}()
 	}
-	if e.allocCancel != nil {
-		e.allocCancel()
-	}
-	e.started = false
 }
 
 // findChrome 按常见路径探测 Chrome/Chromium。

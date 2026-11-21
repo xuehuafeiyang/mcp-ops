@@ -1,24 +1,30 @@
-# mcp-ops 示例配置
+# =============================================================================
+# mcp-ops 示例配置（按功能分块，8 大段与真实 config.yaml 结构一一对应）
 # 明文凭据仅适用于开发/测试环境；上生产前请收紧文件权限并考虑加密存储。
+# 全部段落均有安全默认值，实际部署时按需精简即可。
+# =============================================================================
 
-# ---- 大模型（host 使用）----
+# ---- 1. 大模型（仅 host 模式使用；stdio 接入智能体时本段无关紧要）----
 llm:
-  provider: openai            # openai | anthropic
-  openai:                     # OpenAI 兼容：OpenAI/DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM 通用
+  provider: openai              # openai | anthropic
+  openai:                       # OpenAI 兼容协议：DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM 通用
     base_url: https://api.deepseek.com/v1
     api_key: sk-xxx
     model: deepseek-chat
-  anthropic:                  # Anthropic 原生协议（provider 改为 anthropic 时生效）
-    base_url: https://api.anthropic.com
-    api_key: sk-ant-xxx
-    model: claude-sonnet-4-20250514
-  max_turns: 30               # Agent 循环最大轮数（防失控）
-  system_prompt: ""           # 留空使用内置默认运维提示词
+  # provider 改为 anthropic 时启用：
+  # anthropic:
+  #   base_url: https://api.anthropic.com
+  #   api_key: sk-ant-xxx
+  #   model: claude-sonnet-4-20250514
+  max_turns: 30                 # Agent 循环最大轮数（防失控）
+  system_prompt: ""             # 留空使用内置默认运维提示词
 
-# ---- 两个 MCP Server（Streamable HTTP + Bearer token）----
+# ---- 2. 三个 HTTP MCP Server（仅 ssh-server/db-server/web-server 常驻模式使用；
+#         stdio 模式不监听端口，本段只影响常驻部署）----
+# Streamable HTTP + Bearer token 认证
 ssh_server:
   listen: 127.0.0.1:8801
-  token: dev-token-ssh
+  token: dev-token-ssh          # 生产环境换成强随机 token
 db_server:
   listen: 127.0.0.1:8802
   token: dev-token-db
@@ -26,57 +32,58 @@ web_server:
   listen: 127.0.0.1:8803
   token: dev-token-web
 
-# ---- 网页抓取行为（fetch_url 工具）----
+# ---- 3. 网页抓取（fetch_url 工具的行为与安全边界）----
 # 全部有安全默认值，整段可省略。
 web_fetch:
-  user_agent: "mcp-ops/0.1 (Autonomous Agent)"  # 明确标识自动化抓取，便于站点管理员识别
+  user_agent: "mcp-ops/0.6 (Autonomous Agent)"  # 明确标识自动化抓取，便于站点管理员识别
   timeout: 30s
-  max_bytes: 10485760          # 响应体上限 10 MiB，超出报错而不是截断
-  max_redirects: 5             # 每跳都会重新做 SSRF 与 robots 校验
-  respect_robots: true         # 遵守 robots.txt；确认站点允许自动化访问再设为 false
-  allow_private: false         # 拒绝环回/私网/CGNAT/云元数据地址；读内网页面时才设 true
-  cache_ttl: 5m                # 同一 URL 5 分钟内复用缓存；写 0s 关闭
-  max_length: 20000            # 单次返回字符数，长页用 start_index 续读
-  max_concurrent: 8            # 并发抓取上限，避免打爆目标站
-  default_headers: {}          # 需要登录态时才用，例如 {"Cookie": "session=..."}
+  max_bytes: 10485760           # 响应体上限 10 MiB，超出报错而不是截断
+  max_redirects: 5              # 每跳都会重新做 SSRF 与 robots 校验
+  respect_robots: true          # 遵守 robots.txt；确认站点允许自动化访问再设为 false
+  allow_private: false          # 拒绝环回/私网/云元数据地址；读内网页面时才设 true
+  cache_ttl: 5m                 # 同一 URL 5 分钟内复用缓存；写 0s 关闭
+  max_length: 20000             # 单次返回字符数，长页用 start_index 续读
+  max_concurrent: 8             # 并发抓取上限，避免打爆目标站
+  default_headers: {}           # 需要登录态时才用，例如 {"Cookie": "session=..."}
 
-# ---- Go 原生内置的 7 个官方 server 替代实现（无需 npx/node 外部依赖）----
-# filesystem / memory / sequential-thinking / everything / fetch / git /
-# playwright 已原生编译进 opsctl 单二进制，开箱即用。
-# 浏览器自动化统一为 playwright 一套（原 chrome-devtools 能力已并入）。
+# ---- 4. 七大 Go 原生内置 server（filesystem/memory/sequential-thinking/
+#         everything/fetch/git/playwright，无需 Node/npx）----
 # 整段可省略，全部走默认值。
 builtins:
   filesystem:
-    allowed_directories:       # 限定文件工具可访问的根目录（防路径穿越 / symlink 逃逸）
+    allowed_directories:        # 限定文件工具可访问的根目录（防路径穿越 / symlink 逃逸）
       - .
   memory:
     storage_path: ./.memory.json   # 知识图谱持久化文件（跨会话保留）
   git:
-    default_repo: .            # git 工具默认仓库；留空则每个工具都要显式传 repo_path
-  browser:
-    executable_path: /usr/bin/google-chrome   # 浏览器可执行文件；留空自动探测
-    headless: true                             # 无头模式（调试时改 false）
+    default_repo: .             # git 工具默认仓库；留空则每个工具都要显式传 repo_path
+  browser:                      # playwright 浏览器自动化（chromedp/CDP）
+    executable_path: ""         # 留空自动探测 Chrome；本机只有 Edge 时需显式指定，如
+                                #   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+    headless: true              # 无头模式（调试时改 false 看浏览器动作）
     # user_data_dir: ~/.cache/mcp-ops-browser  # 复用登录态（可选）
 
-# ---- Postman 本地测试引擎（解析 Collection v2.1 + 环境文件，跑请求与断言）----
+# ---- 5. Postman 本地测试引擎（解析 Collection v2.1 + 环境文件，跑请求与断言）----
 # 整段可省略；collection/environment 也可在工具调用时直接传文件路径。
 postman:
-  timeout: 30s                   # 单请求超时，默认 30s
-  collections:                   # 预置 collection 清单（name 供工具按名引用）
+  timeout: 30s                  # 单请求超时，默认 30s
+  collections:                  # 预置 collection 清单（name 供工具按名引用）
     # - name: api-tests
     #   path: ./tests/api.collection.json
-  environments:                  # 预置 environment 清单（提供 {{变量}}）
+  environments:                 # 预置 environment 清单（提供 {{变量}} 替换）
     # - name: dev
     #   path: ./tests/dev.environment.json
 
-# ---- SSH 主机清单 ----
+# ---- 6. SSH 主机清单（ssh_run / list_ssh_hosts 工具）----
+# 四种认证方式：private_key / private_key_data（内嵌 PEM，优先级更高）/ password / agent
 ssh_hosts:
+  # 密钥文件认证（最常用）
   - name: web1
     host: 192.168.1.10
     port: 22
     user: root
     auth:
-      private_key: ~/.ssh/id_rsa   # 私钥路径；或 private_key_data 内嵌 PEM / password / agent: true
+      private_key: ~/.ssh/id_rsa   # 私钥路径（Windows 下如 C:/Users/you/.ssh/id_rsa）
     allowed_commands:              # 命令前缀白名单（token 边界匹配）
       - df
       - free
@@ -87,23 +94,48 @@ ssh_hosts:
       - journalctl
       - tail
       - cat /var/log
-    # 想放行全部命令？把 allowed_commands 替换为 ["*"]（危险命令黑名单仍然生效，
-    # 例如 rm -rf / mkfs / shutdown 仍会被拒绝）。仅建议开发/测试环境使用。
     command_timeout: 120s
 
+  # 内嵌私钥认证（私钥不落盘，优先级高于 private_key）
   - name: db-vm
     host: 192.168.1.20
     port: 22
     user: ops
     auth:
-      password: "123456"           # 仅开发环境建议
-    allowed_commands:
-      - df
-      - free
-      - uptime
+      private_key_data: |          # 整段 PEM 原文
+        -----BEGIN OPENSSH PRIVATE KEY-----
+        REPLACE-WITH-REAL-KEY
+        -----END OPENSSH PRIVATE KEY-----
+    allowed_commands: ["*"]        # 放行全部命令（危险命令黑名单仍生效，rm -rf / mkfs / shutdown 仍被拒绝）；生产不建议
+    command_timeout: 60s
 
-# ---- 数据库清单 ----
+  # 密码认证（仅开发环境建议）
+  - name: test-host
+    host: 127.0.0.1
+    port: 22
+    user: tester
+    auth:
+      password: "test-only"
+    allowed_commands: ["echo", "pwd"]
+
+  # 复用本机 ssh-agent（Windows：OpenSSH Authentication Agent 服务）
+  # - name: jump-host
+  #   host: 10.0.0.1
+  #   port: 22
+  #   user: ops
+  #   auth:
+  #     agent: true
+  #   allowed_commands: ["kubectl", "helm"]
+
+# ---- 7. 数据库清单（db_query / db_execute / db_* 工具；10 种类型全覆盖）----
 databases:
+  # SQLite（文件库写绝对路径；:memory: 为内存库，无需外部服务）
+  - name: local-sqlite
+    type: sqlite                # sqlite | sqlite3 均可
+    database: /data/app.db      # 也可写 :memory:
+    query_timeout: 10s
+
+  # MySQL
   - name: main-mysql
     type: mysql
     host: 127.0.0.1
@@ -113,16 +145,52 @@ databases:
     database: appdb
     query_timeout: 30s
 
-  - name: inner-pg                 # 内网 PG：经 web1 的 SSH 隧道连接
-    type: postgres
-    host: 10.0.0.5                 # SSH 主机视角的内网地址
+  # TiDB（兼容 MySQL 协议，复用 MySQL 驱动）
+  - name: app-tidb
+    type: tidb
+    host: 127.0.0.1
+    port: 4000                  # TiDB 默认端口
+    user: root
+    password: ""
+    database: appdb
+
+  # PostgreSQL
+  - name: analytics-pg
+    type: postgres              # postgres | postgresql
+    host: 127.0.0.1
     port: 5432
     user: postgres
     password: "secret"
     database: analytics
-    via_ssh: web1
-    query_timeout: 60s
 
+  # 达梦 DM8（信创）
+  - name: gov-dm
+    type: dm                    # dm | dameng
+    host: 127.0.0.1
+    port: 5236                  # DM 默认端口
+    user: SYSDBA
+    password: "secret"
+    database: SYSDBA
+
+  # 金仓 KingbaseES（信创）
+  - name: gov-kingbase
+    type: kingbase              # kingbase | kingbasees
+    host: 127.0.0.1
+    port: 54321                 # 金仓默认端口
+    user: system
+    password: "secret"
+    database: test
+
+  # 瀚高 HighGo（信创）
+  - name: gov-highgo
+    type: highgo                # highgo | highgodb
+    host: 127.0.0.1
+    port: 5866                  # 瀚高默认端口
+    user: highgo
+    password: "secret"
+    database: highgo
+
+  # MongoDB
   - name: logs-mongo
     type: mongodb
     host: 127.0.0.1
@@ -131,46 +199,51 @@ databases:
     password: "secret"
     database: logs
 
+  # Redis
   - name: cache-redis
     type: redis
     host: 127.0.0.1
     port: 6379
-    password: ""
-    database: "0"                  # Redis db 编号（字符串形式）
+    password: ""                # 无密码留空
+    database: "0"               # db 编号（字符串形式）
 
+  # Elasticsearch
   - name: search-es
     type: elasticsearch
-    host: 127.0.0.1                # 需要https时写 https://es.example.com
+    host: 127.0.0.1             # 需要 https 时写 https://es.example.com
     port: 9200
     user: elastic
     password: "secret"
 
-  - name: app-tidb
-    type: tidb                     # TiDB 完全兼容 MySQL 协议，复用 MySQL 驱动
-    host: 127.0.0.1
-    port: 4000                     # TiDB 默认端口 4000
-    user: root
-    password: ""
-    database: appdb
-    query_timeout: 30s
+  # 内网库走 SSH 隧道（via_ssh 指向 ssh_hosts 里的名字）
+  # - name: inner-pg
+  #   type: postgres
+  #   host: 10.0.0.5            # SSH 主机视角的内网地址
+  #   port: 5432
+  #   user: postgres
+  #   password: "secret"
+  #   database: analytics
+  #   via_ssh: web1
+  #   query_timeout: 60s
 
-  - name: local-sqlite
-    type: sqlite                   # SQLite 文件数据库，无 host/port，文件路径写在 database
-    database: /data/app.db         # 也可写 :memory: 使用内存库，或改用 dsn 写完整路径
-    query_timeout: 10s
+  # 直接写 DSN 的写法（SQL 类通用，优先级高于 host/port 拆字段）
+  # - name: dsn-demo
+  #   type: mysql
+  #   dsn: "user:pass@tcp(127.0.0.1:3306)/appdb?parseTime=true"
 
-# ---- 额外的外部 MCP Server（host 通过 stdio 子进程挂载，可任意添加）----
-# 注意：filesystem / memory / sequential-thinking / everything / fetch / git /
-# playwright 这 7 个已由上面的 builtins 段原生内置，无需
-# 在此再挂一遍。本段用于挂载 builtins 之外的任意 stdio server（例如自建服务、
-# 其他社区 server、或隔离运行的 opsctl stdio）。
-#
+# ---- 8. 额外的外部 stdio MCP server（仅 host 模式挂载；与内置工具合并）----
+# 注意：filesystem/memory/sequential-thinking/everything/fetch/git/playwright
+# 已由 builtins 原生提供，无需在此重复挂载。
 # host 启动时会用 command + args 拉起每个子进程，完成 MCP 握手后把它们的
-# 工具与内置工具合并。工具名冲突时自动加 "<server名>__" 前缀。
-#
-# disabled: true 可临时停用某个 server；env 可附加环境变量（如 {"PATH": "/extra/bin"}）
+# 工具与内置工具合并；工具名冲突时自动加 "<server名>__" 前缀。
+# disabled: true 可临时停用；env 可附加环境变量（如 {"SOME_TOKEN": "xxx"}）。
 mcp_servers:
-  # 示例：再次拉起 opsctl stdio（把内置工具当外部 server 隔离运行）
-  # - name: opsctl-isolated
-  #   command: /opt/mcp-ops/bin/opsctl
-  #   args: ["stdio", "-config", "/opt/mcp-ops/config.yaml"]
+  # 示例：把内置工具隔离成外部 server 再挂一遍
+  - name: opsctl-isolated
+    command: /opt/mcp-ops/bin/opsctl
+    args: ["stdio", "-config", "/opt/mcp-ops/config.yaml"]
+    disabled: true              # 改 false 启用
+  # - name: my-server
+  #   command: npx
+  #   args: ["-y", "some-community-mcp-server"]
+  #   env: {"SOME_TOKEN": "xxx"}
